@@ -8,7 +8,6 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'maktab_maxfiy_kalit_2026';
 
-// Turso ma'lumotlar bazasi ulanishi
 const TURSO_URL = process.env.TURSO_DATABASE_URL || 'libsql://maktab-dbb-javokh14.aws-ap-northeast-1.turso.io';
 const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN || 'eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3OTI5OTY2NDUsImlkIjoiMDFhMTc2ZTUtM2YwMS03MjE1LWI4NDMtMDE3ZmQ2ZWU1ZjkwIiwia2lkIjoiZElaN0NzZExlZXZIZkJwU29vWW9nVGNrd3NMczRXSG1LT0x0aTMzT0tPayIsInJpZCI6ImE4YWIyMGRjLTc0ZDgtNDhiOS1hMGRmLTUyM2YzMzJkYTcyNiJ9.r52YShbLwjZDVhyf_Uvjb9tOGh-cGrJuOaI1_aMtkezmJLpwnACOkY6mZM5q6ivcnQQff6HlZ5f1D83xQYKSBA';
 
@@ -17,29 +16,22 @@ const turso = createClient({
     authToken: TURSO_TOKEN
 });
 
-// Netlify yoki boshqa domenlardan keladigan so'rovlarga to'liq ruxsat (CORS)
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
-// Server holatini tekshirish uchun bosh sahifa (Health Check)
 app.get('/', (req, res) => {
-    res.json({
-        status: "active",
-        message: "Maktab Login-Parollar API serveri muvaffaqiyatli ishlamoqda!"
-    });
+    res.json({ status: "active", message: "Maktab Login-Parollar API serveri faol!" });
 });
 
-// Tokenni tekshirish uchun middleware
 function authMiddleware(req, res, next) {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
-
-    if (!token) return res.status(401).json({ error: "Avtorizatsiyadan o'tilmagan: Token yo'q" });
+    if (!token) return res.status(401).json({ error: "Token yo'q" });
 
     jwt.verify(token, JWT_SECRET, (err, user) => {
         if (err) return res.status(403).json({ error: "Yaroqsiz token" });
@@ -48,7 +40,7 @@ function authMiddleware(req, res, next) {
     });
 }
 
-// 1. Tizimga kirish (Admin yoki Mas'ul)
+// 1. Tizimga kirish
 app.post('/api/login', async (req, res) => {
     try {
         const { login, password } = req.body;
@@ -72,7 +64,7 @@ app.post('/api/login', async (req, res) => {
         const token = jwt.sign(
             { id: user.id, fullname: user.fullname, role: user.role, assigned_class: user.assigned_class },
             JWT_SECRET,
-            { expiresIn: '24h' }
+            { expiresIn: '72h' }
         );
 
         res.json({
@@ -85,22 +77,23 @@ app.post('/api/login', async (req, res) => {
             }
         });
     } catch (err) {
+        console.error("Login xatosi:", err);
         res.status(500).json({ error: err.message });
     }
 });
 
-// 2. Mas'ul xodimlarni olish (Faqat Admin)
+// 2. Mas'ul xodimlarni olish
 app.get('/api/teachers', authMiddleware, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: "Faqat admin uchun" });
     try {
-        const rs = await turso.execute("SELECT id, fullname, login, assigned_class, role FROM users WHERE role = 'teacher'");
+        const rs = await turso.execute("SELECT id, fullname, login, assigned_class, role FROM users WHERE role = 'teacher' ORDER BY assigned_class ASC");
         res.json(rs.rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// 3. Yangi mas'ul xodim qo'shish (Faqat Admin)
+// 3. Mas'ul xodim qo'shish
 app.post('/api/teachers', authMiddleware, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: "Faqat admin uchun" });
     try {
@@ -121,7 +114,7 @@ app.post('/api/teachers', authMiddleware, async (req, res) => {
     }
 });
 
-// 4. Mas'ul xodimni o'chirish (Faqat Admin)
+// 4. Mas'ul xodimni o'chirish
 app.delete('/api/teachers/:id', authMiddleware, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: "Faqat admin uchun" });
     try {
@@ -135,11 +128,11 @@ app.delete('/api/teachers/:id', authMiddleware, async (req, res) => {
     }
 });
 
-// 5. O'quvchilar ro'yxatini olish
+// 5. O'quvchilarni olish
 app.get('/api/students', authMiddleware, async (req, res) => {
     try {
         if (req.user.role === 'admin') {
-            const rs = await turso.execute("SELECT * FROM students ORDER BY grade_number ASC, grade_letter ASC");
+            const rs = await turso.execute("SELECT * FROM students ORDER BY grade_number ASC, grade_letter ASC, fullname ASC");
             res.json(rs.rows);
         } else {
             const [num, letter] = req.user.assigned_class.split('-');
@@ -178,30 +171,72 @@ app.post('/api/students', authMiddleware, async (req, res) => {
     }
 });
 
-// 7. O'quvchini o'chirish
-app.delete('/api/students/:id', authMiddleware, async (req, res) => {
+// 7. O'quvchini tahrirlash
+app.put('/api/students/:id', authMiddleware, async (req, res) => {
     try {
         const studentId = req.params.id;
+        const { fullname, grade_number, grade_letter, login, password } = req.body;
 
-        const check = await turso.execute({
-            sql: "SELECT * FROM students WHERE id = ?",
-            args: [studentId]
-        });
-
-        if (check.rows.length === 0) return res.status(404).json({ error: "O'quvchi topilmadi" });
+        const check = await turso.execute({ sql: "SELECT * FROM students WHERE id = ?", args: [studentId] });
+        if (check.rows.length === 0) return res.status(404).json({ error: "Topilmadi" });
         const student = check.rows[0];
 
         if (req.user.role === 'teacher') {
             const currentClass = `${student.grade_number}-${student.grade_letter}`;
-            if (req.user.assigned_class !== currentClass) {
-                return res.status(403).json({ error: "Siz faqat o'z sinfingiz o'quvchisini o'chira olasiz!" });
-            }
+            if (req.user.assigned_class !== currentClass) return res.status(403).json({ error: "Ruxsat yo'q" });
         }
 
         await turso.execute({
-            sql: "DELETE FROM students WHERE id = ?",
-            args: [studentId]
+            sql: "UPDATE students SET fullname = ?, grade_number = ?, grade_letter = ?, login = ?, password = ? WHERE id = ?",
+            args: [fullname, parseInt(grade_number), grade_letter, login, password, studentId]
         });
+
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// 8. Ommaviy o'quvchi qo'shish (Batch / CSV import)
+app.post('/api/students/bulk', authMiddleware, async (req, res) => {
+    try {
+        const { students } = req.body;
+        if (!Array.isArray(students) || students.length === 0) {
+            return res.status(400).json({ error: "Ma'lumotlar massivi bo'sh" });
+        }
+
+        for (let s of students) {
+            const num = parseInt(s.grade_number);
+            if (req.user.role === 'teacher') {
+                const expClass = `${num}-${s.grade_letter}`;
+                if (req.user.assigned_class !== expClass) continue;
+            }
+            await turso.execute({
+                sql: "INSERT INTO students (fullname, grade_number, grade_letter, login, password) VALUES (?, ?, ?, ?, ?)",
+                args: [s.fullname, num, s.grade_letter, s.login, s.password]
+            });
+        }
+
+        res.json({ success: true, count: students.length });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// 9. O'quvchini o'chirish
+app.delete('/api/students/:id', authMiddleware, async (req, res) => {
+    try {
+        const studentId = req.params.id;
+        const check = await turso.execute({ sql: "SELECT * FROM students WHERE id = ?", args: [studentId] });
+        if (check.rows.length === 0) return res.status(404).json({ error: "Topilmadi" });
+        const student = check.rows[0];
+
+        if (req.user.role === 'teacher') {
+            const currentClass = `${student.grade_number}-${student.grade_letter}`;
+            if (req.user.assigned_class !== currentClass) return res.status(403).json({ error: "Ruxsat yo'q" });
+        }
+
+        await turso.execute({ sql: "DELETE FROM students WHERE id = ?", args: [studentId] });
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -209,5 +244,5 @@ app.delete('/api/students/:id', authMiddleware, async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Server ishga tushdi: Port ${PORT}`);
+    console.log(`Server faol: Port ${PORT}`);
 });
