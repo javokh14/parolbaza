@@ -3,7 +3,6 @@ const cors = require('cors');
 const { createClient } = require('@libsql/client');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -18,9 +17,22 @@ const turso = createClient({
     authToken: TURSO_TOKEN
 });
 
-app.use(cors());
+// Netlify yoki boshqa domenlardan keladigan so'rovlarga to'liq ruxsat (CORS)
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+
+// Server holatini tekshirish uchun bosh sahifa (Health Check)
+app.get('/', (req, res) => {
+    res.json({
+        status: "active",
+        message: "Maktab Login-Parollar API serveri muvaffaqiyatli ishlamoqda!"
+    });
+});
 
 // Tokenni tekshirish uchun middleware
 function authMiddleware(req, res, next) {
@@ -123,7 +135,7 @@ app.delete('/api/teachers/:id', authMiddleware, async (req, res) => {
     }
 });
 
-// 5. O'quvchilar ro'yxatini olish (Admin hammasini, Mas'ul faqat o'z sinfini)
+// 5. O'quvchilar ro'yxatini olish
 app.get('/api/students', authMiddleware, async (req, res) => {
     try {
         if (req.user.role === 'admin') {
@@ -194,11 +206,6 @@ app.delete('/api/students/:id', authMiddleware, async (req, res) => {
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
-});
-
-// SPA routing fallback
-app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 app.listen(PORT, () => {
