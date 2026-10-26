@@ -8,6 +8,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'maktab_maxfiy_kalit_2026';
 
+// Подключение к Turso DB
 const TURSO_URL = process.env.TURSO_DATABASE_URL || 'libsql://maktab-dbb-javokh14.aws-ap-northeast-1.turso.io';
 const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN || 'eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3OTI5OTY2NDUsImlkIjoiMDFhMTc2ZTUtM2YwMS03MjE1LWI4NDMtMDE3ZmQ2ZWU1ZjkwIiwia2lkIjoiZElaN0NzZExlZXZIZkJwU29vWW9nVGNrd3NMczRXSG1LT0x0aTMzT0tPayIsInJpZCI6ImE4YWIyMGRjLTc0ZDgtNDhiOS1hMGRmLTUyM2YzMzJkYTcyNiJ9.r52YShbLwjZDVhyf_Uvjb9tOGh-cGrJuOaI1_aMtkezmJLpwnACOkY6mZM5q6ivcnQQff6HlZ5f1D83xQYKSBA';
 
@@ -16,6 +17,7 @@ const turso = createClient({
     authToken: TURSO_TOKEN
 });
 
+// Настройка CORS для работы с Netlify и любыми доменами
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -24,10 +26,62 @@ app.use(cors({
 
 app.use(express.json({ limit: '10mb' }));
 
+// Главная страница (проверка статуса API)
 app.get('/', (req, res) => {
     res.json({ status: "active", message: "Maktab Login-Parollar API serveri faol!" });
 });
 
+// АВТОМАТИЧЕСКАЯ НАСТРОЙКА / СБРОС АДМИНИСТРАТОРА
+app.get('/setup-admin', async (req, res) => {
+    try {
+        // Создаем таблицы, если они еще не созданы
+        await turso.execute(`
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fullname TEXT NOT NULL,
+                login TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                role TEXT NOT NULL,
+                assigned_class TEXT
+            )
+        `);
+
+        await turso.execute(`
+            CREATE TABLE IF NOT EXISTS students (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fullname TEXT NOT NULL,
+                grade_number INTEGER NOT NULL,
+                grade_letter TEXT NOT NULL,
+                login TEXT NOT NULL,
+                password TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // Хешируем стандартный пароль admin123
+        const hash = await bcrypt.hash('admin123', 10);
+
+        // Удаляем старую запись admin при наличии и создаем новую
+        await turso.execute("DELETE FROM users WHERE login = 'admin'");
+        await turso.execute({
+            sql: "INSERT INTO users (fullname, login, password, role, assigned_class) VALUES (?, ?, ?, 'admin', 'Barchasi')",
+            args: ['Bosh Administrator', 'admin', hash]
+        });
+
+        res.send(`
+            <div style="font-family: sans-serif; text-align: center; padding: 50px;">
+                <h2 style="color: #10b981;">Admin muvaffaqiyatli yaratildi!</h2>
+                <p>Login: <b>admin</b> | Parol: <b>admin123</b></p>
+                <p>Endi saytga o'tib bemalol tizimga kirishingiz mumkin.</p>
+            </div>
+        `);
+    } catch (err) {
+        console.error(err);
+        res.status(500).send("Xatolik: " + err.message);
+    }
+});
+
+// Middleware для проверки JWT-токена
 function authMiddleware(req, res, next) {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -40,7 +94,7 @@ function authMiddleware(req, res, next) {
     });
 }
 
-// 1. Tizimga kirish
+// 1. Авторизация (Login)
 app.post('/api/login', async (req, res) => {
     try {
         const { login, password } = req.body;
@@ -82,7 +136,7 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// 2. Mas'ul xodimlarni olish
+// 2. Получение списка учителей (только для Admin)
 app.get('/api/teachers', authMiddleware, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: "Faqat admin uchun" });
     try {
@@ -93,7 +147,7 @@ app.get('/api/teachers', authMiddleware, async (req, res) => {
     }
 });
 
-// 3. Mas'ul xodim qo'shish
+// 3. Добавление учителя (только для Admin)
 app.post('/api/teachers', authMiddleware, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: "Faqat admin uchun" });
     try {
@@ -114,7 +168,7 @@ app.post('/api/teachers', authMiddleware, async (req, res) => {
     }
 });
 
-// 4. Mas'ul xodimni o'chirish
+// 4. Удаление учителя (только для Admin)
 app.delete('/api/teachers/:id', authMiddleware, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: "Faqat admin uchun" });
     try {
@@ -128,7 +182,7 @@ app.delete('/api/teachers/:id', authMiddleware, async (req, res) => {
     }
 });
 
-// 5. O'quvchilarni olish
+// 5. Получение учеников (Admin видит всех, учитель — только свой класс)
 app.get('/api/students', authMiddleware, async (req, res) => {
     try {
         if (req.user.role === 'admin') {
@@ -147,7 +201,7 @@ app.get('/api/students', authMiddleware, async (req, res) => {
     }
 });
 
-// 6. O'quvchi qo'shish
+// 6. Добавление ученика
 app.post('/api/students', authMiddleware, async (req, res) => {
     try {
         const { fullname, grade_number, grade_letter, login, password } = req.body;
@@ -171,7 +225,7 @@ app.post('/api/students', authMiddleware, async (req, res) => {
     }
 });
 
-// 7. O'quvchini tahrirlash
+// 7. Редактирование ученика
 app.put('/api/students/:id', authMiddleware, async (req, res) => {
     try {
         const studentId = req.params.id;
@@ -197,12 +251,12 @@ app.put('/api/students/:id', authMiddleware, async (req, res) => {
     }
 });
 
-// 8. Ommaviy o'quvchi qo'shish (Batch / CSV import)
+// 8. Массовое добавление учеников (CSV Batch)
 app.post('/api/students/bulk', authMiddleware, async (req, res) => {
     try {
         const { students } = req.body;
         if (!Array.isArray(students) || students.length === 0) {
-            return res.status(400).json({ error: "Ma'lumotlar massivi bo'sh" });
+            return res.status(400).json({ error: "Massiv bo'sh" });
         }
 
         for (let s of students) {
@@ -223,7 +277,7 @@ app.post('/api/students/bulk', authMiddleware, async (req, res) => {
     }
 });
 
-// 9. O'quvchini o'chirish
+// 9. Удаление ученика
 app.delete('/api/students/:id', authMiddleware, async (req, res) => {
     try {
         const studentId = req.params.id;
