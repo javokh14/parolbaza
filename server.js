@@ -9,10 +9,13 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'maktab_maxfiy_kalit_2026';
 
-// Turso ulanishi (Render Environment Variables orqali olinadi)
+// Turso ma'lumotlar bazasi ulanishi
+const TURSO_URL = process.env.TURSO_DATABASE_URL || 'libsql://maktab-dbb-javokh14.aws-ap-northeast-1.turso.io';
+const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN || 'eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3OTI5OTY2NDUsImlkIjoiMDFhMTc2ZTUtM2YwMS03MjE1LWI4NDMtMDE3ZmQ2ZWU1ZjkwIiwia2lkIjoiZElaN0NzZExlZXZIZkJwU29vWW9nVGNrd3NMczRXSG1LT0x0aTMzT0tPayIsInJpZCI6ImE4YWIyMGRjLTc0ZDgtNDhiOS1hMGRmLTUyM2YzMzJkYTcyNiJ9.r52YShbLwjZDVhyf_Uvjb9tOGh-cGrJuOaI1_aMtkezmJLpwnACOkY6mZM5q6ivcnQQff6HlZ5f1D83xQYKSBA';
+
 const turso = createClient({
-    url: process.env.TURSO_DATABASE_URL,
-    authToken: process.env.TURSO_AUTH_TOKEN
+    url: TURSO_URL,
+    authToken: TURSO_TOKEN
 });
 
 app.use(cors());
@@ -140,36 +143,27 @@ app.get('/api/students', authMiddleware, async (req, res) => {
 });
 
 // 6. O'quvchi qo'shish
-app.post('/api/students', async (req, res) => {
-    // Agar auth bo'lsa tekshiramiz
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-    if (!token) return res.status(401).json({ error: "Token yo'q" });
+app.post('/api/students', authMiddleware, async (req, res) => {
+    try {
+        const { fullname, grade_number, grade_letter, login, password } = req.body;
+        const num = parseInt(grade_number);
 
-    jwt.verify(token, JWT_SECRET, async (err, user) => {
-        if (err) return res.status(403).json({ error: "Yaroqsiz token" });
-
-        try {
-            const { fullname, grade_number, grade_letter, login, password } = req.body;
-            const num = parseInt(grade_number);
-
-            if (user.role === 'teacher') {
-                const expectedClass = `${num}-${grade_letter}`;
-                if (user.assigned_class !== expectedClass) {
-                    return res.status(403).json({ error: `Siz faqat ${user.assigned_class} sinfiga o'quvchi qo'sha olasiz!` });
-                }
+        if (req.user.role === 'teacher') {
+            const expectedClass = `${num}-${grade_letter}`;
+            if (req.user.assigned_class !== expectedClass) {
+                return res.status(403).json({ error: `Siz faqat ${req.user.assigned_class} sinfiga o'quvchi qo'sha olasiz!` });
             }
-
-            const rs = await turso.execute({
-                sql: "INSERT INTO students (fullname, grade_number, grade_letter, login, password) VALUES (?, ?, ?, ?, ?)",
-                args: [fullname, num, grade_letter, login, password]
-            });
-
-            res.json({ id: Number(rs.lastInsertRowid), fullname, grade_number: num, grade_letter, login, password });
-        } catch (e) {
-            res.status(500).json({ error: e.message });
         }
-    });
+
+        const rs = await turso.execute({
+            sql: "INSERT INTO students (fullname, grade_number, grade_letter, login, password) VALUES (?, ?, ?, ?, ?)",
+            args: [fullname, num, grade_letter, login, password]
+        });
+
+        res.json({ id: Number(rs.lastInsertRowid), fullname, grade_number: num, grade_letter, login, password });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // 7. O'quvchini o'chirish
@@ -202,7 +196,7 @@ app.delete('/api/students/:id', authMiddleware, async (req, res) => {
     }
 });
 
-// SPA fallback
+// SPA routing fallback
 app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
